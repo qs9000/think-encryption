@@ -5,45 +5,58 @@ declare(strict_types=1);
 namespace ThinkEncryption\traits;
 
 use think\Request;
+use ThinkEncryption\exception\EncryptException;
 
 /**
  * 客户端身份识别 Trait
- * 提供获取客户端 ID 的统一方法
  */
 trait ClientIdentity
 {
-    /**
-     * 获取配置
-     */
-    abstract protected function getConfig(): array;
+    // ClientId 格式：字母数字下划线，长度 4-64
+    protected static string $clientIdPattern = '/^[a-zA-Z0-9_-]{4,64}$/';
+    protected static string $defaultClientIdHeader = 'X-Client-ID';
 
     /**
      * 获取客户端 ID
-     * @param Request|null $request
-     * @return string|null
      */
     protected function getClientId(?Request $request = null): ?string
     {
-        if ($request === null) {
-            $request = app('request');
+        $request ??= app('request');
+        $clientId = $request->header($this->getClientIdHeader());
+
+        if ($clientId && $this->validateClientId($clientId)) {
+            return $clientId;
         }
 
-        $headerName = $this->getConfig()['hybrid']['client_id_header'] ?? 'X-Client-ID';
-        return $request->header($headerName) ?: null;
+        return null;
     }
 
     /**
-     * 获取客户端 ID，如果不存在则抛出异常
-     * @param Request|null $request
-     * @return string
-     * @throws \ThinkEncryption\exception\EncryptException
+     * 获取客户端 ID，不存在则抛出异常
+     * @throws EncryptException
      */
     protected function getClientIdOrFail(?Request $request = null): string
     {
         $clientId = $this->getClientId($request);
         if (!$clientId) {
-            throw \ThinkEncryption\exception\EncryptException::clientIdMissing();
+            throw EncryptException::clientIdMissing();
         }
         return $clientId;
+    }
+
+    /**
+     * 验证 ClientId 格式
+     */
+    protected function validateClientId(string $clientId): bool
+    {
+        return preg_match(self::$clientIdPattern, $clientId) === 1;
+    }
+
+    /**
+     * 获取客户端 ID header 名称
+     */
+    protected function getClientIdHeader(): string
+    {
+        return config('encrypt.hybrid.client_id_header', self::$defaultClientIdHeader);
     }
 }

@@ -13,29 +13,94 @@ class HybridEncryption
     private array $config;
     private RSA $rsa;
     private AES $aes;
+    private ?string $cacheEncryptionKey = null;
+
+    // 缓存
+    private ?int $rotationCheckTimestamp = null;
+    private ?string $rotationCheckResult = null;
+    private ?string $currentVersionCache = null;
 
     public function __construct()
     {
         $this->config = Config::get('encrypt');
-        $this->rsa = new RSA($this->config['rsa']['key_dir'], $this->config['rsa']['key_bits'] ?? 2048);
+        $this->rsa = new RSA($this->config['rsa']['key_dir'], $this->config['rsa']['key_bits'] ?? 3072);
         $this->aes = new AES();
+        $this->initCacheEncryptionKey();
     }
 
     /**
-     * 获取当前RSA版本
+     * 清除内部缓存
+     */
+    public function clearCache(): void
+    {
+        $this->currentVersionCache = null;
+        $this->rotationCheckTimestamp = null;
+        $this->rotationCheckResult = null;
+    }
+
+    /**
+     * 初始化缓存加密密钥
+     * 使用服务端主密钥派生出用于加密客户端密钥的密钥
+     */
+    private function initCacheEncryptionKey(): void
+    {
+        if (!($this->config['hybrid']['client_key_encryption'] ?? true)) {
+            return;
+        }
+
+        $masterKey = env('ENCRYPTION_KEY') ?: env('APP_KEY');
+        if (empty($masterKey)) {
+            throw EncryptException::aesError('缓存加密需要配置 ENCRYPTION_KEY 或 APP_KEY 环境变量');
+        }
+
+        // 使用 HKDF 派生出缓存加密密钥
+        $this->cacheEncryptionKey = hash_hkdf('sha256', $masterKey, 32, 'client_key_storage', 'ThinkEncryption_v1');
+    }
+
+    /**
+     * 加密客户端密钥数据
+     */
+    private function encryptClientKeyData(array $keyData): string
+    {
+        if ($this->cacheEncryptionKey === null) {
+            return json_encode($keyData, JSON_UNESCAPED_UNICODE);
+        }
+
+        return $this->aes->encrypt($keyData, $this->cacheEncryptionKey, null, true);
+    }
+
+    /**
+     * 解密客户端密钥数据
+     */
+    private function decryptClientKeyData(string $encryptedData): array
+    {
+        if ($this->cacheEncryptionKey === null) {
+            return json_decode($encryptedData, true);
+        }
+
+        return $this->aes->decrypt($encryptedData, $this->cacheEncryptionKey, null, true);
+    }
+
+    /**
+     * 获取当前RSA版本（带内存缓存）
      * @throws EncryptException
      */
     public function getCurrentVersion(): string
     {
         try {
+            // 优先返回内存缓存
+            if ($this->currentVersionCache !== null) {
+                return $this->currentVersionCache;
+            }
+
             $versionKey = $this->config['hybrid']['version_prefix'] . 'current';
             $version = Cache::get($versionKey);
             if (!$version) {
                 $version = $this->initializeKeys();
             }
+            
+            $this->currentVersionCache = $version;
             return $version;
-        } catch (EncryptException $e) {
-            throw $e;
         } catch (\Exception $e) {
             throw EncryptException::rsaError('获取当前版本失败: ' . $e->getMessage(), $e);
         }
@@ -68,16 +133,18 @@ class HybridEncryption
             Cache::set($versionKey, $version, $this->config['hybrid']['rsa_rotation_period'] * 2);
             Cache::set($this->config['hybrid']['version_prefix'] . $version, $versionInfo, $this->config['hybrid']['rsa_rotation_period'] * 2);
             $this->cleanupOldVersions();
+            
+            // 清除版本缓存，确保下次获取返回最新版本
+            $this->currentVersionCache = $version;
+            
             return $version;
-        } catch (EncryptException $e) {
-            throw $e;
         } catch (\Exception $e) {
             throw EncryptException::rsaError('初始化密钥失败: ' . $e->getMessage(), $e);
         }
     }
 
     /**
-     * 检查并轮换密钥
+     * 检查并轮换密钥（带缓存）
      * @throws EncryptException
      */
     public function checkAndRotateKeys(): ?string
@@ -86,23 +153,37 @@ class HybridEncryption
             if (!$this->config['hybrid']['auto_rotate']) {
                 return null;
             }
+
+            // 缓存检查：5秒内不重复检查
+            $now = time();
+            if ($this->rotationCheckResult !== null && 
+                $this->rotationCheckTimestamp !== null && 
+                ($now - $this->rotationCheckTimestamp) < 5) {
+                return $this->rotationCheckResult;
+            }
+
             $versionKey = $this->config['hybrid']['version_prefix'] . 'current';
             $currentVersion = Cache::get($versionKey);
             if (!$currentVersion) {
-                return $this->initializeKeys();
+                $this->rotationCheckResult = $this->initializeKeys();
+                $this->rotationCheckTimestamp = $now;
+                return $this->rotationCheckResult;
             }
             $versionInfo = Cache::get($this->config['hybrid']['version_prefix'] . $currentVersion);
             if (!$versionInfo) {
-                return $this->initializeKeys();
+                $this->rotationCheckResult = $this->initializeKeys();
+                $this->rotationCheckTimestamp = $now;
+                return $this->rotationCheckResult;
             }
             $createdAt = $versionInfo['created_at'] ?? 0;
             $rotationPeriod = $this->config['hybrid']['rsa_rotation_period'];
-            if (time() - $createdAt >= $rotationPeriod) {
-                return $this->rotateKeys();
+            if ($now - $createdAt >= $rotationPeriod) {
+                $this->rotationCheckResult = $this->rotateKeys();
+            } else {
+                $this->rotationCheckResult = null;
             }
-            return null;
-        } catch (EncryptException $e) {
-            throw $e;
+            $this->rotationCheckTimestamp = $now;
+            return $this->rotationCheckResult;
         } catch (\Exception $e) {
             throw EncryptException::rsaError('检查密钥轮换失败: ' . $e->getMessage(), $e);
         }
@@ -115,9 +196,10 @@ class HybridEncryption
     private function rotateKeys(): string
     {
         $lockKey = $this->config['hybrid']['version_prefix'] . 'rotate_lock';
+        $lockTtl = $this->config['hybrid']['rotate_lock_ttl'] ?? 120; // 默认 120 秒
 
         // 尝试获取锁，防止并发轮换
-        if (!Cache::add($lockKey, time(), 30)) {
+        if (!Cache::add($lockKey, time(), $lockTtl)) {
             // 已有其他进程在轮换，等待并返回当前版本
             usleep(100000); // 等待 100ms
             return $this->getCurrentVersion();
@@ -146,9 +228,11 @@ class HybridEncryption
             Cache::set($this->config['hybrid']['version_prefix'] . 'current', $newVersion, $this->config['hybrid']['rsa_rotation_period'] * 2);
             Cache::set($this->config['hybrid']['version_prefix'] . $newVersion, $versionInfo, $this->config['hybrid']['rsa_rotation_period'] * 2);
             $this->cleanupOldVersions();
+            
+            // 清除版本缓存，确保下次获取返回最新版本
+            $this->currentVersionCache = $newVersion;
+            
             return $newVersion;
-        } catch (EncryptException $e) {
-            throw $e;
         } catch (\Exception $e) {
             throw EncryptException::rsaError('密钥轮换失败: ' . $e->getMessage(), $e);
         } finally {
@@ -182,8 +266,14 @@ class HybridEncryption
             }
 
             $publicKeyFile = "{$keyDir}/rsa_public_{$version}.pem";
-            @unlink($file);
-            @unlink($publicKeyFile);
+
+            // 记录删除失败（而不是静默忽略）
+            if (file_exists($file) && !@unlink($file)) {
+                error_log("[ThinkEncryption] 清理旧版本密钥失败: {$file}");
+            }
+            if (file_exists($publicKeyFile) && !@unlink($publicKeyFile)) {
+                error_log("[ThinkEncryption] 清理旧版本公钥失败: {$publicKeyFile}");
+            }
             Cache::delete($this->config['hybrid']['version_prefix'] . $version);
         }
     }
@@ -216,8 +306,6 @@ class HybridEncryption
                 $result['transition_end_at'] = time() + $this->config['hybrid']['rsa_transition_period'];
             }
             return $result;
-        } catch (EncryptException $e) {
-            throw $e;
         } catch (\Exception $e) {
             throw EncryptException::rsaError('获取公钥信息失败: ' . $e->getMessage(), $e);
         }
@@ -240,9 +328,15 @@ class HybridEncryption
             if (!$versionInfo) {
                 throw EncryptException::versionExpired($rsaVersion);
             }
-            $this->rsa->loadKeys($versionInfo['private_key'], $versionInfo['public_key']);
-            $aesKey = $this->rsa->decrypt($encryptedAesKey);
-            $iv = $this->rsa->decrypt($encryptedIv);
+            $privateKeyPath = $versionInfo['private_key'];
+            $publicKeyPath = $versionInfo['public_key'];
+            
+            // 为每个版本创建独立的 RSA 实例，避免状态混乱
+            $rsa = new RSA($this->config['rsa']['key_dir'], $this->config['rsa']['key_bits'] ?? 3072);
+            $rsa->loadKeys($privateKeyPath, $publicKeyPath);
+            
+            $aesKey = $rsa->decrypt($encryptedAesKey);
+            $iv = $rsa->decrypt($encryptedIv);
             if (strlen($aesKey) !== $this->config['aes']['key_length']) {
                 throw EncryptException::exchangeFailed('AES密钥长度错误');
             }
@@ -257,15 +351,15 @@ class HybridEncryption
                 'created_at' => time(),
                 'last_used' => time(),
             ];
-            Cache::set($cacheKey, $keyData, $this->config['hybrid']['key_ttl']);
+            // 加密存储客户端密钥
+            $encryptedKeyData = $this->encryptClientKeyData($keyData);
+            Cache::set($cacheKey, $encryptedKeyData, $this->config['hybrid']['key_ttl']);
             return [
                 'success' => true,
                 'client_id' => $clientId,
                 'rsa_version' => $rsaVersion,
                 'expires_at' => time() + $this->config['hybrid']['key_ttl'],
             ];
-        } catch (EncryptException $e) {
-            throw $e;
         } catch (\Exception $e) {
             throw EncryptException::exchangeFailed($e->getMessage(), $e);
         }
@@ -279,8 +373,12 @@ class HybridEncryption
     {
         try {
             $cacheKey = $this->config['hybrid']['cache_prefix'] . $clientId;
-            $keyData = Cache::get($cacheKey);
-            if (!$keyData) {
+            $encryptedData = Cache::get($cacheKey);
+            if (!$encryptedData) {
+                return null;
+            }
+            $keyData = $this->decryptClientKeyData($encryptedData);
+            if (!$keyData || !isset($keyData['aes_key'])) {
                 return null;
             }
             return [
@@ -294,23 +392,38 @@ class HybridEncryption
     }
 
     /**
-     * 续期客户端密钥 TTL
+     * 刷新客户端密钥 TTL 并更新最后使用时间
      * @throws EncryptException
      */
-    public function touchClientKey(string $clientId): bool
+    public function refreshClientKey(string $clientId): bool
     {
         try {
             $cacheKey = $this->config['hybrid']['cache_prefix'] . $clientId;
-            $keyData = Cache::get($cacheKey);
+            $encryptedData = Cache::get($cacheKey);
+            if (!$encryptedData) {
+                return false;
+            }
+            $keyData = $this->decryptClientKeyData($encryptedData);
             if (!$keyData) {
                 return false;
             }
             $keyData['last_used'] = time();
-            Cache::set($cacheKey, $keyData, $this->config['hybrid']['key_ttl']);
+            $encryptedKeyData = $this->encryptClientKeyData($keyData);
+            Cache::set($cacheKey, $encryptedKeyData, $this->config['hybrid']['key_ttl']);
             return true;
         } catch (\Exception $e) {
             throw EncryptException::keyNotFound($clientId, $e);
         }
+    }
+
+    /**
+     * 续期客户端密钥 TTL（已废弃，请使用 refreshClientKey）
+     * @deprecated 使用 refreshClientKey 代替
+     * @throws EncryptException
+     */
+    public function touchClientKey(string $clientId): bool
+    {
+        return $this->refreshClientKey($clientId);
     }
 
     /**
@@ -366,8 +479,6 @@ class HybridEncryption
                 'client_version' => $clientVersion,
                 'is_valid' => $isValid,
             ];
-        } catch (EncryptException $e) {
-            throw $e;
         } catch (\Exception $e) {
             throw EncryptException::rsaError('检查客户端密钥版本失败: ' . $e->getMessage(), $e);
         }
@@ -397,8 +508,6 @@ class HybridEncryption
                 'new_version' => $newVersion,
                 'message' => '密钥轮换成功，客户端需要在过渡期内重新交换密钥',
             ];
-        } catch (EncryptException $e) {
-            throw $e;
         } catch (\Exception $e) {
             throw EncryptException::rsaError('强制轮换密钥失败: ' . $e->getMessage(), $e);
         }

@@ -7,36 +7,52 @@ namespace ThinkEncryption\middleware;
 use ThinkEncryption\exception\EncryptException;
 use ThinkEncryption\service\encrypt\HybridEncryption;
 use ThinkEncryption\traits\ClientIdentity;
-use think\facade\Config;
 
 class EncryptionMiddleware
 {
     use ClientIdentity;
 
     private HybridEncryption $hybridEncryption;
-    private array $config;
+    private static ?array $normalizedExcludePaths = null;
+    private static ?string $configHash = null;
 
     public function __construct()
     {
         $this->hybridEncryption = new HybridEncryption();
-        $this->config = Config::get('encrypt');
     }
 
-    protected function getConfig(): array
+    /**
+     * 获取规范化的排除路径（带配置哈希检查的静态缓存）
+     */
+    private function getNormalizedExcludePaths(): array
     {
-        return $this->config;
+        $excludePaths = config('encrypt.middleware.exclude_paths', [
+            '/api/encryption/public-key',
+            '/api/encryption/exchange-keys',
+            '/api/encryption/status',
+        ]);
+        $currentHash = md5(json_encode($excludePaths));
+        
+        // 配置变化时清除缓存
+        if (self::$configHash !== $currentHash) {
+            self::$normalizedExcludePaths = null;
+            self::$configHash = $currentHash;
+        }
+        
+        if (self::$normalizedExcludePaths === null) {
+            // 规范化路径：统一添加前缀 '/' 并移除末尾斜杠
+            self::$normalizedExcludePaths = array_map(function ($p) {
+                return '/' . trim(ltrim($p, '/'), '/');
+            }, $excludePaths);
+        }
+        return self::$normalizedExcludePaths;
     }
 
     public function handle($request, \Closure $next)
     {
         try {
-            $path = $request->pathinfo();
-            $excludePaths = [
-                'api/encryption/public-key',
-                'api/encryption/exchange-keys',
-                'api/encryption/status',
-            ];
-            if (in_array($path, $excludePaths)) {
+            $path = '/' . ltrim($request->pathinfo(), '/');
+            if (in_array($path, $this->getNormalizedExcludePaths())) {
                 return $next($request);
             }
             $clientId = $this->getClientIdOrFail($request);

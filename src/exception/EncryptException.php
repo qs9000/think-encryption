@@ -25,6 +25,7 @@ class EncryptException extends Exception
     public const CODE_VERSION_EXPIRED = 4002;
     public const CODE_EXCHANGE_FAILED = 5001;
     public const CODE_CLIENT_ID_MISSING = 6001;
+    public const CODE_CLIENT_ID_INVALID = 6002;
 
     /**
      * 错误消息映射
@@ -41,6 +42,7 @@ class EncryptException extends Exception
         self::CODE_VERSION_EXPIRED => 'RSA版本已过期',
         self::CODE_EXCHANGE_FAILED => '密钥交换失败',
         self::CODE_CLIENT_ID_MISSING => '缺少客户端ID',
+        self::CODE_CLIENT_ID_INVALID => '客户端ID格式无效',
     ];
 
     /**
@@ -58,6 +60,7 @@ class EncryptException extends Exception
         self::CODE_VERSION_EXPIRED => 449,
         self::CODE_EXCHANGE_FAILED => 400,
         self::CODE_CLIENT_ID_MISSING => 400,
+        self::CODE_CLIENT_ID_INVALID => 400,
     ];
 
     /**
@@ -171,7 +174,7 @@ class EncryptException extends Exception
     public static function decryptFailed(string $reason = '', ?Throwable $previous = null): self
     {
         return new self(
-            self::CODE_DECRYPT_FAILED . ($reason ? ': ' . $reason : ''),
+            $reason ?: self::$messages[self::CODE_DECRYPT_FAILED],
             self::CODE_DECRYPT_FAILED,
             [],
             $previous
@@ -181,7 +184,7 @@ class EncryptException extends Exception
     public static function encryptFailed(string $reason = '', ?Throwable $previous = null): self
     {
         return new self(
-            self::CODE_ENCRYPT_FAILED . ($reason ? ': ' . $reason : ''),
+            $reason ?: self::$messages[self::CODE_ENCRYPT_FAILED],
             self::CODE_ENCRYPT_FAILED,
             [],
             $previous
@@ -191,7 +194,7 @@ class EncryptException extends Exception
     public static function rsaError(string $reason = '', ?Throwable $previous = null): self
     {
         return new self(
-            self::CODE_RSA_ERROR . ($reason ? ': ' . $reason : ''),
+            $reason ?: self::$messages[self::CODE_RSA_ERROR],
             self::CODE_RSA_ERROR,
             [],
             $previous
@@ -201,7 +204,7 @@ class EncryptException extends Exception
     public static function aesError(string $reason = '', ?Throwable $previous = null): self
     {
         return new self(
-            self::CODE_AES_ERROR . ($reason ? ': ' . $reason : ''),
+            $reason ?: self::$messages[self::CODE_AES_ERROR],
             self::CODE_AES_ERROR,
             [],
             $previous
@@ -241,5 +244,14 @@ class EncryptException extends Exception
     public static function clientIdMissing(): self
     {
         return new self(self::CODE_CLIENT_ID_MISSING, self::CODE_CLIENT_ID_MISSING);
+    }
+
+    public static function clientIdInvalid(string $clientId): self
+    {
+        return new self(
+            self::CODE_CLIENT_ID_INVALID,
+            self::CODE_CLIENT_ID_INVALID,
+            ['client_id' => $clientId, 'format' => '必须为 4-64 位的字母数字下划线连字符组合']
+        );
     }
 }

@@ -3,80 +3,234 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>混合加密示例</title>
+    <title>ThinkEncryption 混合加密示例</title>
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 50px auto;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
             padding: 20px;
+            background: #f5f5f5;
         }
-        .section {
-            margin: 20px 0;
-            padding: 15px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
         }
-        button {
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .card h2 {
+            margin-top: 0;
+            color: #555;
+            font-size: 1.1rem;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        .btn {
             padding: 10px 20px;
-            margin: 5px;
+            border: none;
+            border-radius: 5px;
             cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: #1890ff;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #40a9ff;
+        }
+        .btn-success {
+            background: #52c41a;
+            color: white;
+        }
+        .btn-success:hover {
+            background: #73d13d;
+        }
+        .btn-warning {
+            background: #faad14;
+            color: white;
+        }
+        .btn-warning:hover {
+            background: #ffc53d;
+        }
+        .btn-danger {
+            background: #ff4d4f;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #ff7875;
+        }
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
         }
         #output {
-            background: #f5f5f5;
+            background: #1e1e1e;
+            color: #d4d4d4;
             padding: 15px;
             border-radius: 5px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            max-height: 400px;
+            overflow-y: auto;
             white-space: pre-wrap;
             word-break: break-all;
         }
-        .success { color: green; }
-        .error { color: red; }
+        .log-info { color: #6cb6ff; }
+        .log-success { color: #6cb6ff; }
+        .log-error { color: #f97583; }
+        .log-warn { color: #ffab70; }
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .info-item {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .info-label {
+            font-size: 12px;
+            color: #666;
+        }
+        .info-value {
+            font-weight: bold;
+            color: #333;
+        }
+        input[type="text"], textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+        }
+        .badge-success { background: #d9f7be; color: #52c41a; }
+        .badge-warning { background: #ffe58f; color: #faad14; }
+        .badge-error { background: #fff1f0; color: #ff4d4f; }
     </style>
 </head>
 <body>
-    <h1>混合加密客户端示例</h1>
+    <h1>🔐 ThinkEncryption 混合加密示例</h1>
 
-    <div class="section">
-        <h2>1. 初始化加密客户端</h2>
-        <button onclick="initClient()">初始化客户端</button>
+    <div class="card">
+        <h2>📡 服务端配置</h2>
+        <input type="text" id="baseUrl" value="http://localhost:8000" placeholder="输入后端地址">
     </div>
 
-    <div class="section">
-        <h2>2. 密钥交换</h2>
-        <button onclick="exchangeKeys()">交换密钥</button>
-        <button onclick="checkStatus()">检查状态</button>
+    <div class="card">
+        <h2>ℹ️ 客户端状态</h2>
+        <div class="info-grid" id="clientInfo">
+            <div class="info-item">
+                <div class="info-label">客户端ID</div>
+                <div class="info-value" id="infoClientId">-</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">密钥状态</div>
+                <div class="info-value" id="infoHasKeys">-</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">RSA版本</div>
+                <div class="info-value" id="infoVersion">-</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">公钥位数</div>
+                <div class="info-value" id="infoKeyBits">-</div>
+            </div>
+        </div>
+        <div class="btn-group">
+            <button class="btn btn-primary" onclick="initClient()">🚀 初始化</button>
+            <button class="btn btn-success" onclick="exchangeKeys()">🔑 密钥交换</button>
+            <button class="btn btn-warning" onclick="checkStatus()">📊 检查状态</button>
+            <button class="btn btn-danger" onclick="clearKeys()">🗑️ 清除密钥</button>
+        </div>
     </div>
 
-    <div class="section">
-        <h2>3. 加密通信测试</h2>
-        <button onclick="sendEncryptedRequest()">发送加密请求</button>
-        <button onclick="clearKeys()">清除密钥</button>
+    <div class="card">
+        <h2>📤 发送加密请求</h2>
+        <input type="text" id="requestPath" value="/api/encryption/status" placeholder="请求路径">
+        <textarea id="requestBody" placeholder="请求数据 (JSON格式)">{"test": "Hello, 加密通信!"}</textarea>
+        <div class="btn-group">
+            <button class="btn btn-success" onclick="sendRequest()">🚀 发送加密请求</button>
+        </div>
     </div>
 
-    <div class="section">
-        <h2>输出</h2>
+    <div class="card">
+        <h2>📋 日志输出</h2>
         <div id="output">点击按钮开始测试...</div>
     </div>
 
     <script src="encryption.js"></script>
     <script>
         let client = null;
-        const output = document.getElementById('output');
-        const baseUrl = 'http://localhost:8000'; // 修改为你的后端地址
 
         function log(message, type = 'info') {
+            const output = document.getElementById('output');
             const time = new Date().toLocaleTimeString();
-            const className = type === 'error' ? 'error' : type === 'success' ? 'success' : '';
+            const className = `log-${type}`;
             output.innerHTML += `<div class="${className}">[${time}] ${message}</div>`;
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function updateClientInfo() {
+            if (!client) return;
+            
+            const info = client.getInfo();
+            document.getElementById('infoClientId').textContent = info.clientId || '-';
+            
+            const hasKeysEl = document.getElementById('infoHasKeys');
+            if (info.hasKeys) {
+                hasKeysEl.innerHTML = '<span class="badge badge-success">已就绪</span>';
+            } else {
+                hasKeysEl.innerHTML = '<span class="badge badge-warning">未交换</span>';
+            }
+            
+            document.getElementById('infoVersion').textContent = info.rsaVersion || '-';
+            document.getElementById('infoKeyBits').textContent = info.versionInfo?.key_bits ? `${info.versionInfo.key_bits} bit` : '-';
         }
 
         async function initClient() {
+            const baseUrl = document.getElementById('baseUrl').value;
+            if (!baseUrl) {
+                log('请输入服务端地址', 'error');
+                return;
+            }
+            
             try {
-                output.innerHTML = '';
-                log('正在初始化加密客户端...');
+                log('正在初始化加密客户端...', 'info');
                 client = new HybridEncryptionClient(baseUrl);
+                const result = await client.init();
+                
+                if (result.cached) {
+                    log('从本地存储加载了已缓存的密钥', 'warn');
+                }
+                
                 log(`客户端ID: ${client.clientId}`, 'success');
-                log('客户端初始化完成', 'success');
+                updateClientInfo();
+                log('初始化完成', 'success');
             } catch (error) {
                 log(`初始化失败: ${error.message}`, 'error');
             }
@@ -84,15 +238,16 @@
 
         async function exchangeKeys() {
             if (!client) {
-                log('请先初始化客户端', 'error');
+                log('请先点击"初始化"按钮', 'error');
                 return;
             }
             try {
-                log('正在获取公钥并交换密钥...');
+                log('正在获取公钥并交换密钥...', 'info');
                 const result = await client.exchangeKeys();
-                log(`密钥交换成功!`, 'success');
-                log(`RSA版本: ${result.rsa_version}`);
-                log(`密钥过期时间: ${new Date(result.expires_at * 1000).toLocaleString()}`);
+                log('密钥交换成功! 🎉', 'success');
+                log(`RSA版本: ${result.rsa_version}`, 'info');
+                log(`过期时间: ${new Date(result.expires_at * 1000).toLocaleString()}`, 'info');
+                updateClientInfo();
             } catch (error) {
                 log(`密钥交换失败: ${error.message}`, 'error');
             }
@@ -100,31 +255,59 @@
 
         async function checkStatus() {
             if (!client) {
-                log('请先初始化客户端', 'error');
+                log('请先点击"初始化"按钮', 'error');
                 return;
             }
             try {
-                log('正在检查加密状态...');
+                log('正在检查加密状态...', 'info');
                 const result = await client.getStatus();
-                log(`状态: ${JSON.stringify(result.data, null, 2)}`, 'success');
+                
+                if (result.code !== 200) {
+                    log(`检查失败: ${result.message}`, 'error');
+                    return;
+                }
+                
+                const data = result.data;
+                log('状态信息:', 'info');
+                log(`  - 客户端ID: ${data.client_id}`, 'info');
+                log(`  - 有加密密钥: ${data.has_encryption_key ? '是' : '否'}`, 'info');
+                log(`  - 密钥有效: ${data.is_key_valid ? '是' : '否'}`, 'info');
+                log(`  - 需要更新: ${data.need_key_update ? '是' : '否'}`, 'info');
+                log(`  - 服务端RSA版本: ${data.current_rsa_version}`, 'info');
+                log(`  - 客户端RSA版本: ${data.client_rsa_version || '无'}`, 'info');
             } catch (error) {
                 log(`检查状态失败: ${error.message}`, 'error');
             }
         }
 
-        async function sendEncryptedRequest() {
+        async function sendRequest() {
             if (!client) {
-                log('请先初始化客户端', 'error');
+                log('请先点击"初始化"按钮', 'error');
                 return;
             }
+            
+            const path = document.getElementById('requestPath').value;
+            let body = null;
+            
+            const bodyStr = document.getElementById('requestBody').value.trim();
+            if (bodyStr) {
+                try {
+                    body = JSON.parse(bodyStr);
+                } catch (e) {
+                    log('请求数据必须是有效的JSON格式', 'error');
+                    return;
+                }
+            }
+            
             try {
-                log('正在发送加密请求...');
-                // 这里替换为你实际的API端点
-                const result = await client.request('/api/test', {
+                log(`发送加密请求: ${path}`, 'info');
+                const result = await client.request(path, {
                     method: 'POST',
-                    body: { message: 'Hello, 这是加密的数据!' }
+                    body: body
                 });
-                log(`响应: ${JSON.stringify(result, null, 2)}`, 'success');
+                
+                log(`响应状态: ${result.code}`, result.code === 200 ? 'success' : 'error');
+                log(`响应数据: ${JSON.stringify(result, null, 2)}`, 'info');
             } catch (error) {
                 log(`请求失败: ${error.message}`, 'error');
             }
@@ -133,7 +316,11 @@
         function clearKeys() {
             if (client) {
                 client.clearKeys();
-                log('本地密钥已清除', 'success');
+                log('本地密钥已清除', 'warn');
+                document.getElementById('infoClientId').textContent = '-';
+                document.getElementById('infoHasKeys').innerHTML = '-';
+                document.getElementById('infoVersion').textContent = '-';
+                document.getElementById('infoKeyBits').textContent = '-';
             }
         }
     </script>

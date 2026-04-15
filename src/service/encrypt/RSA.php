@@ -12,27 +12,27 @@ class RSA
     private string $publicKeyPath;
     private ?string $privateKey = null;
     private ?string $publicKey = null;
-    private int $keyBits = 2048;
+    private int $keyBits = 3072;
 
-    public function __construct(?string $keyDir = null, int $keyBits = 2048)
+    public function __construct(?string $keyDir = null, int $keyBits = 3072)
     {
         $this->keyBits = $keyBits;
-        $this->privateKeyPath = $keyDir ?? root_path() . 'runtime/keys/rsa_private.pem';
-        $this->publicKeyPath = $keyDir ?? root_path() . 'runtime/keys/rsa_public.pem';
-
-        if (is_dir($this->privateKeyPath)) {
-            $this->privateKeyPath = rtrim($this->privateKeyPath, '/\\') . '/rsa_private.pem';
-            $this->publicKeyPath = rtrim($this->publicKeyPath, '/\\') . '/rsa_public.pem';
+        // 默认密钥目录移至 storage/keys（Web 不可访问）
+        $defaultKeyDir = root_path() . 'storage/keys';
+        if ($keyDir === null) {
+            $keyDir = $defaultKeyDir;
         }
+        $this->privateKeyPath = is_dir($keyDir) ? $keyDir . '/rsa_private.pem' : $keyDir;
+        $this->publicKeyPath = is_dir($keyDir) ? $keyDir . '/rsa_public.pem' : $keyDir;
     }
 
     /**
      * 生成RSA密钥对
-     * @param int $bits 密钥长度，默认2048位
+     * @param int $bits 密钥长度，默认3072位（2024年后推荐）
      * @return array 包含私钥和公钥的数组
      * @throws EncryptException
      */
-    public function generateKeyPair(int $bits = 2048): array
+    public function generateKeyPair(int $bits = 3072): array
     {
         $config = [
             'private_key_bits' => $bits,
@@ -62,6 +62,19 @@ class RSA
             'private_key' => $privateKey,
             'public_key' => $publicKey,
         ];
+    }
+
+    /**
+     * 从私钥内容获取密钥位数
+     */
+    private function getKeyBitsFromPrivateKey(string $key): int
+    {
+        $keyResource = openssl_pkey_get_private($key);
+        if ($keyResource !== false) {
+            $details = openssl_pkey_get_details($keyResource);
+            return $details['bits'] ?? $this->keyBits;
+        }
+        return $this->keyBits;
     }
 
     /**
@@ -97,12 +110,17 @@ class RSA
         if (file_put_contents($privateKeyPath, $privateKey) === false) {
             throw EncryptException::rsaError("保存私钥失败: {$privateKeyPath}");
         }
-        chmod($privateKeyPath, 0600);
+        // 仅在非 Windows 系统设置文件权限
+        if (DIRECTORY_SEPARATOR !== '\\') {
+            chmod($privateKeyPath, 0600);
+        }
 
         if (file_put_contents($publicKeyPath, $publicKey) === false) {
             throw EncryptException::rsaError("保存公钥失败: {$publicKeyPath}");
         }
-        chmod($publicKeyPath, 0644);
+        if (DIRECTORY_SEPARATOR !== '\\') {
+            chmod($publicKeyPath, 0644);
+        }
 
         return [
             'private_key_path' => $privateKeyPath,
@@ -129,7 +147,7 @@ class RSA
             if ($privateKeyContent !== false && $this->validatePrivateKey($privateKeyContent)) {
                 $this->privateKey = $privateKeyContent;
                 $result['private_key_loaded'] = true;
-                $this->keyBits = $this->getKeyBitsFromContent($privateKeyContent) ?? $this->keyBits;
+                $this->keyBits = $this->getKeyBitsFromPrivateKey($privateKeyContent);
             }
         }
 
@@ -169,14 +187,6 @@ class RSA
     }
 
     /**
-     * 从密钥内容获取密钥位数
-     */
-    private function getKeyBitsFromContent(string $key): ?int
-    {
-        return $this->getKeyBits($key);
-    }
-
-    /**
      * 获取密钥位数
      * @param string|null $key 密钥内容，如果为 null 则返回当前实例的 keyBits
      * @return int
@@ -211,12 +221,14 @@ class RSA
 
             $keyBits = $this->getKeyBits($key);
             $encrypted = '';
-            // PKCS1_PADDING 下，最大可加密字节数 = (keyBits / 8) - 11
-            $chunkSize = (int) floor(($keyBits / 8) - 11);
+            // OAEP_PADDING 下，最大可加密字节数 = (keyBits / 8) - 2 * hash_length - 2
+            // SHA256 hash length = 32 bytes
+            $hashLength = 32;
+            $chunkSize = (int) floor(($keyBits / 8) - 2 * $hashLength - 2);
 
             foreach (str_split($data, $chunkSize) as $chunk) {
                 $encryptedChunk = '';
-                if (!openssl_public_encrypt($chunk, $encryptedChunk, $key, OPENSSL_PKCS1_PADDING)) {
+                if (!openssl_public_encrypt($chunk, $encryptedChunk, $key, OPENSSL_PKCS1_OAEP_PADDING)) {
                     throw EncryptException::encryptFailed('RSA加密失败: ' . openssl_error_string());
                 }
                 $encrypted .= $encryptedChunk;
@@ -250,12 +262,12 @@ class RSA
             }
 
             $decrypted = '';
-            // RSA 解密后每个块固定为 keyBits / 8 字节
+            // OAEP 解密后每个块固定为 keyBits / 8 字节
             $chunkSize = (int) ($keyBits / 8);
 
             foreach (str_split($data, $chunkSize) as $chunk) {
                 $decryptedChunk = '';
-                if (!openssl_private_decrypt($chunk, $decryptedChunk, $key, OPENSSL_PKCS1_PADDING)) {
+                if (!openssl_private_decrypt($chunk, $decryptedChunk, $key, OPENSSL_PKCS1_OAEP_PADDING)) {
                     throw EncryptException::decryptFailed('RSA解密失败: ' . openssl_error_string());
                 }
                 $decrypted .= $decryptedChunk;
