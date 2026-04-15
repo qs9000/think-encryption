@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>混合加密示例</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+        }
+        #output {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>混合加密客户端示例</h1>
+
+    <div class="section">
+        <h2>1. 初始化加密客户端</h2>
+        <button onclick="initClient()">初始化客户端</button>
+    </div>
+
+    <div class="section">
+        <h2>2. 密钥交换</h2>
+        <button onclick="exchangeKeys()">交换密钥</button>
+        <button onclick="checkStatus()">检查状态</button>
+    </div>
+
+    <div class="section">
+        <h2>3. 加密通信测试</h2>
+        <button onclick="sendEncryptedRequest()">发送加密请求</button>
+        <button onclick="clearKeys()">清除密钥</button>
+    </div>
+
+    <div class="section">
+        <h2>输出</h2>
+        <div id="output">点击按钮开始测试...</div>
+    </div>
+
+    <script src="encryption.js"></script>
+    <script>
+        let client = null;
+        const output = document.getElementById('output');
+        const baseUrl = 'http://localhost:8000'; // 修改为你的后端地址
+
+        function log(message, type = 'info') {
+            const time = new Date().toLocaleTimeString();
+            const className = type === 'error' ? 'error' : type === 'success' ? 'success' : '';
+            output.innerHTML += `<div class="${className}">[${time}] ${message}</div>`;
+        }
+
+        async function initClient() {
+            try {
+                output.innerHTML = '';
+                log('正在初始化加密客户端...');
+                client = new HybridEncryptionClient(baseUrl);
+                log(`客户端ID: ${client.clientId}`, 'success');
+                log('客户端初始化完成', 'success');
+            } catch (error) {
+                log(`初始化失败: ${error.message}`, 'error');
+            }
+        }
+
+        async function exchangeKeys() {
+            if (!client) {
+                log('请先初始化客户端', 'error');
+                return;
+            }
+            try {
+                log('正在获取公钥并交换密钥...');
+                const result = await client.exchangeKeys();
+                log(`密钥交换成功!`, 'success');
+                log(`RSA版本: ${result.rsa_version}`);
+                log(`密钥过期时间: ${new Date(result.expires_at * 1000).toLocaleString()}`);
+            } catch (error) {
+                log(`密钥交换失败: ${error.message}`, 'error');
+            }
+        }
+
+        async function checkStatus() {
+            if (!client) {
+                log('请先初始化客户端', 'error');
+                return;
+            }
+            try {
+                log('正在检查加密状态...');
+                const result = await client.getStatus();
+                log(`状态: ${JSON.stringify(result.data, null, 2)}`, 'success');
+            } catch (error) {
+                log(`检查状态失败: ${error.message}`, 'error');
+            }
+        }
+
+        async function sendEncryptedRequest() {
+            if (!client) {
+                log('请先初始化客户端', 'error');
+                return;
+            }
+            try {
+                log('正在发送加密请求...');
+                // 这里替换为你实际的API端点
+                const result = await client.request('/api/test', {
+                    method: 'POST',
+                    body: { message: 'Hello, 这是加密的数据!' }
+                });
+                log(`响应: ${JSON.stringify(result, null, 2)}`, 'success');
+            } catch (error) {
+                log(`请求失败: ${error.message}`, 'error');
+            }
+        }
+
+        function clearKeys() {
+            if (client) {
+                client.clearKeys();
+                log('本地密钥已清除', 'success');
+            }
+        }
+    </script>
+</body>
+</html>
