@@ -98,7 +98,7 @@ class HybridEncryption
             if (!$version) {
                 $version = $this->initializeKeys();
             }
-            
+
             $this->currentVersionCache = $version;
             return $version;
         } catch (\Exception $e) {
@@ -112,7 +112,24 @@ class HybridEncryption
      */
     public function initializeKeys(): string
     {
+        $lockKey = $this->config['hybrid']['version_prefix'] . 'init_lock';
+        $lockTtl = 30; // 初始化锁较短
+
+        // 使用 SET NX EX 保证原子性
+        if (!Cache::handler()->set($lockKey, time(), ['NX', 'EX' => $lockTtl])) {
+            // 已有其他进程在初始化，等待并返回当前版本
+            usleep(50000);
+            return $this->getCurrentVersion();
+        }
+
         try {
+            // 双重检查：可能其他进程已完成初始化
+            $versionKey = $this->config['hybrid']['version_prefix'] . 'current';
+            $existingVersion = Cache::get($versionKey);
+            if ($existingVersion) {
+                return $existingVersion;
+            }
+
             $keyDir = $this->config['rsa']['key_dir'];
             $version = date('YmdHis');
             $this->rsa->generateKeyPair($this->config['rsa']['key_bits']);
@@ -123,7 +140,6 @@ class HybridEncryption
                 "{$keyDir}/{$this->config['rsa']['private_key_file']}",
                 "{$keyDir}/{$this->config['rsa']['public_key_file']}"
             );
-            $versionKey = $this->config['hybrid']['version_prefix'] . 'current';
             $versionInfo = [
                 'version' => $version,
                 'created_at' => time(),
@@ -133,10 +149,10 @@ class HybridEncryption
             Cache::set($versionKey, $version, $this->config['hybrid']['rsa_rotation_period'] * 2);
             Cache::set($this->config['hybrid']['version_prefix'] . $version, $versionInfo, $this->config['hybrid']['rsa_rotation_period'] * 2);
             $this->cleanupOldVersions();
-            
+
             // 清除版本缓存，确保下次获取返回最新版本
             $this->currentVersionCache = $version;
-            
+
             return $version;
         } catch (\Exception $e) {
             throw EncryptException::rsaError('初始化密钥失败: ' . $e->getMessage(), $e);
@@ -156,9 +172,11 @@ class HybridEncryption
 
             // 缓存检查：5秒内不重复检查
             $now = time();
-            if ($this->rotationCheckResult !== null && 
-                $this->rotationCheckTimestamp !== null && 
-                ($now - $this->rotationCheckTimestamp) < 5) {
+            if (
+                $this->rotationCheckResult !== null &&
+                $this->rotationCheckTimestamp !== null &&
+                ($now - $this->rotationCheckTimestamp) < 5
+            ) {
                 return $this->rotationCheckResult;
             }
 
@@ -198,8 +216,10 @@ class HybridEncryption
         $lockKey = $this->config['hybrid']['version_prefix'] . 'rotate_lock';
         $lockTtl = $this->config['hybrid']['rotate_lock_ttl'] ?? 120; // 默认 120 秒
 
-        // 尝试获取锁，防止并发轮换
-        if (!Cache::add($lockKey, time(), $lockTtl)) {
+        // 使用 Redis SET NX EX 保证原子性
+        // 直接调用 Redis handler 实现 SET key value NX EX ttl
+        $result = Cache::handler()->set($lockKey, time(), ['NX', 'EX' => $lockTtl]);
+        if (!$result) {
             // 已有其他进程在轮换，等待并返回当前版本
             usleep(100000); // 等待 100ms
             return $this->getCurrentVersion();
@@ -228,15 +248,13 @@ class HybridEncryption
             Cache::set($this->config['hybrid']['version_prefix'] . 'current', $newVersion, $this->config['hybrid']['rsa_rotation_period'] * 2);
             Cache::set($this->config['hybrid']['version_prefix'] . $newVersion, $versionInfo, $this->config['hybrid']['rsa_rotation_period'] * 2);
             $this->cleanupOldVersions();
-            
+
             // 清除版本缓存，确保下次获取返回最新版本
             $this->currentVersionCache = $newVersion;
-            
+
             return $newVersion;
         } catch (\Exception $e) {
             throw EncryptException::rsaError('密钥轮换失败: ' . $e->getMessage(), $e);
-        } finally {
-            Cache::delete($lockKey);
         }
     }
 
@@ -330,11 +348,11 @@ class HybridEncryption
             }
             $privateKeyPath = $versionInfo['private_key'];
             $publicKeyPath = $versionInfo['public_key'];
-            
+
             // 为每个版本创建独立的 RSA 实例，避免状态混乱
             $rsa = new RSA($this->config['rsa']['key_dir'], $this->config['rsa']['key_bits'] ?? 3072);
             $rsa->loadKeys($privateKeyPath, $publicKeyPath);
-            
+
             $aesKey = $rsa->decrypt($encryptedAesKey);
             $iv = $rsa->decrypt($encryptedIv);
             if (strlen($aesKey) !== $this->config['aes']['key_length']) {
@@ -399,20 +417,70 @@ class HybridEncryption
     {
         try {
             $cacheKey = $this->config['hybrid']['cache_prefix'] . $clientId;
+            $ttl = $this->config['hybrid']['key_ttl'];
+            $newLastUsed = time();
+            $masterKey = $this->cacheEncryptionKey;
+
+            // 使用 Lua 脚本原子更新 last_used
+            // 注意：需要传入加密密钥才能在服务端完成加密
+            if ($masterKey === null) {
+                // 无加密模式，直接更新
+                $encryptedData = Cache::get($cacheKey);
+                if (!$encryptedData) {
+                    return false;
+                }
+                $keyData = json_decode($encryptedData, true);
+                if (!$keyData) {
+                    return false;
+                }
+                $keyData['last_used'] = $newLastUsed;
+                Cache::set($cacheKey, json_encode($keyData, JSON_UNESCAPED_UNICODE), $ttl);
+                return true;
+            }
+
+            // Lua 脚本：原子读取、解密、更新、加密、写入
+            // 由于 ThinkPHP Cache 不直接支持 eval，我们需要回退到加锁方案
+            return $this->atomicRefreshClientKey($clientId, $newLastUsed, $ttl);
+        } catch (\Exception $e) {
+            throw EncryptException::keyNotFound($clientId, $e);
+        }
+    }
+
+    /**
+     * 原子刷新客户端密钥（使用 Redis SETNX 锁）
+     */
+    private function atomicRefreshClientKey(string $clientId, int $lastUsed, int $ttl): bool
+    {
+        $cacheKey = $this->config['hybrid']['cache_prefix'] . $clientId;
+        $lockKey = $cacheKey . ':refresh_lock';
+        $lockTtl = 5; // 5秒锁
+
+        // 获取锁
+        if (!Cache::handler()->set($lockKey, time(), ['NX', 'EX' => $lockTtl])) {
+            // 获取锁失败，尝试直接返回（不阻塞等待）
+            // 反正 TTL 会自动续期
+            return Cache::has($cacheKey);
+        }
+
+        try {
+            // 读取-修改-写入
             $encryptedData = Cache::get($cacheKey);
             if (!$encryptedData) {
                 return false;
             }
+
             $keyData = $this->decryptClientKeyData($encryptedData);
             if (!$keyData) {
                 return false;
             }
-            $keyData['last_used'] = time();
+
+            $keyData['last_used'] = $lastUsed;
             $encryptedKeyData = $this->encryptClientKeyData($keyData);
-            Cache::set($cacheKey, $encryptedKeyData, $this->config['hybrid']['key_ttl']);
+            Cache::set($cacheKey, $encryptedKeyData, $ttl);
+
             return true;
-        } catch (\Exception $e) {
-            throw EncryptException::keyNotFound($clientId, $e);
+        } finally {
+            Cache::delete($lockKey);
         }
     }
 
